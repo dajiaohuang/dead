@@ -32,11 +32,14 @@ class _HasLineno(Protocol):
 
 
 class Scope:
-    def __init__(self) -> None:
+    def __init__(self, parent: Scope | None = None) -> None:
+        self.parent = parent
         self.reads: UsageMap = collections.defaultdict(set)
         self.defines: UsageMap = collections.defaultdict(set)
         self.reads_tests: UsageMap = collections.defaultdict(set)
         self.global_names: set[str] = set()
+        self.nonlocal_names: set[str] = set()
+        self.nonlocal_defines: UsageMap = collections.defaultdict(set)
 
 
 class Visitor(ast.NodeVisitor):
@@ -66,7 +69,7 @@ class Visitor(ast.NodeVisitor):
 
     @contextlib.contextmanager
     def scope(self) -> Generator[None]:
-        self.scopes.append(Scope())
+        self.scopes.append(Scope(parent=self.scopes[-1]))
         try:
             yield
         finally:
@@ -93,10 +96,34 @@ class Visitor(ast.NodeVisitor):
         if not self.is_test:
             if name in self.scopes[-1].global_names:
                 target = self.scopes[0]
+            elif name in self.scopes[-1].nonlocal_names:
+                self.scopes[-1].nonlocal_defines[name].add(
+                    self.definition_str(node),
+                )
+                return
             else:
                 target = self.scopes[-1]
 
             target.defines[name].add(self.definition_str(node))
+
+    def resolve_nonlocal_definitions(self) -> None:
+        root = self.scopes[0]
+        for scope in reversed(self.previous_scopes):
+            for name, definitions in scope.nonlocal_defines.items():
+                parent = scope.parent
+                while parent is not None and parent is not root:
+                    if (
+                            name in parent.nonlocal_names or
+                            name in parent.global_names
+                    ):
+                        parent = parent.parent
+                    elif name in parent.defines:
+                        parent.defines[name].update(definitions)
+                        break
+                    else:
+                        parent = parent.parent
+                else:
+                    scope.defines[name].update(definitions)
 
     def read(self, name: str, node: _HasLineno) -> None:
         for scope in self.scopes:
@@ -219,6 +246,11 @@ class Visitor(ast.NodeVisitor):
 
     def visit_Global(self, node: ast.Global) -> None:
         self.scopes[-1].global_names.update(node.names)
+
+        self.generic_visit(node)
+
+    def visit_Nonlocal(self, node: ast.Nonlocal) -> None:
+        self.scopes[-1].nonlocal_names.update(node.names)
 
         self.generic_visit(node)
 
@@ -352,6 +384,8 @@ def main(argv: Sequence[str] | None = None) -> int:
                 for tp, s, (lineno, _), _, _ in tokenize.tokenize(f.readline):
                     if tp == tokenize.COMMENT:
                         visitor.visit_comment(lineno, s)
+
+    visitor.resolve_nonlocal_definitions()
 
     retv = 0
 

@@ -321,7 +321,6 @@ print(g)
     assert not dead.main(())
 
 
-@pytest.mark.xfail  # would be nice!
 def test_nonlocal_target(git_dir):
     src = '''\
 def f():
@@ -334,6 +333,26 @@ def f():
     return x
 
 f()
+'''
+    git_dir.join('f.py').write(src)
+    subprocess.check_call(('git', 'add', '.'))
+    assert not dead.main(())
+
+
+def test_nonlocal_target_skips_intermediate_scope(git_dir):
+    src = '''\
+def outer():
+    def middle():
+        def inner():
+            nonlocal x
+            x = 2
+        inner()
+
+    x = 1
+    middle()
+    return x
+
+outer()
 '''
     git_dir.join('f.py').write(src)
     subprocess.check_call(('git', 'add', '.'))
